@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Subasta ganadera en vivo</title>
+<style>
+  :root { --ok:#2e7d32; --alerta:#ef6c00; --falla:#c62828; --gris:#6d6d6d; --fondo:#f6f3ec; --tarjeta:#fff; --texto:#222; }
+  @media (prefers-color-scheme: dark) { :root { --fondo:#1b1b18; --tarjeta:#272722; --texto:#eee; --gris:#aaa; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--fondo); color:var(--texto); }
+  header { padding:1rem; background:#3e2f1c; color:#fff; display:flex; justify-content:space-between; align-items:center; }
+  header span { font-size:.85rem; }
+  main { display:grid; gap:1rem; padding:1rem; grid-template-columns: 2fr 1fr; }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
+  .grid { display:grid; gap:.75rem; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .card { background:var(--tarjeta); border-radius:10px; padding:.8rem; box-shadow:0 1px 3px #0003; }
+  .estado { display:inline-block; padding:.1rem .5rem; border-radius:99px; color:#fff; font-size:.75rem; }
+  .abierto { background:var(--ok); } .ultima_llamada { background:var(--alerta); }
+  .adjudicado { background:var(--gris); } .retirado { background:var(--falla); }
+  .precio { font-size:1.6rem; font-weight:700; margin:.3rem 0; }
+  form { display:flex; gap:.4rem; flex-wrap:wrap; margin-top:.5rem; }
+  input { padding:.4rem; border:1px solid #8886; border-radius:6px; width:100%; background:transparent; color:inherit; }
+  button { padding:.45rem .8rem; border:0; border-radius:6px; background:#3e2f1c; color:#fff; cursor:pointer; }
+  .msg { font-size:.8rem; min-height:1.1em; color:var(--falla); }
+  #feed { max-height:70vh; overflow:auto; font-size:.8rem; padding:0; margin:0; list-style:none; }
+  #feed li { padding:.25rem 0; border-bottom:1px solid #8883; }
+  .rechazada { color:var(--falla); } .cierre { color:var(--ok); font-weight:600; }
+</style>
+</head>
+<body>
+<header><strong>Subasta ganadera en vivo</strong><span id="conexion">conectando…</span></header>
+<main>
+  <section>
+    <details class="card" style="margin-bottom:.75rem">
+      <summary>Martillero: abrir un lote</summary>
+      <form id="nuevo">
+        <input name="id" placeholder="Id del lote (p. ej. 101)" required>
+        <input name="peso_kg" type="number" placeholder="Peso (kg)" required>
+        <input name="base_por_kg" type="number" placeholder="Precio base ($/kg)" required>
+        <input name="abierto_ms" type="number" placeholder="Reloj abierto (ms, opcional)">
+        <button>Abrir lote</button><span class="msg" id="msg-nuevo"></span>
+      </form>
+    </details>
+    <div class="grid" id="lotes"></div>
+  </section>
+  <aside class="card"><h3>Bitácora en vivo</h3><ul id="feed"></ul></aside>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const fmt = (n) => new Intl.NumberFormat('es-MX', {style:'currency', currency:'MXN', maximumFractionDigits:0}).format(n);
+let lotes = [], pendiente = null;
+
+async function api(ruta, opciones) {
+  const r = await fetch(ruta, opciones);
+  return { ok: r.ok, datos: await r.json().catch(() => ({})) };
+}
+const post = (ruta, cuerpo) => api(ruta, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(cuerpo || {}) });
+
+async function cargar() {
+  const { datos } = await api('/api/lotes');
+  lotes = datos.lotes || [];
+  pintar();
+}
+function refrescarPronto() { clearTimeout(pendiente); pendiente = setTimeout(cargar, 250); }
+
+function el(tag, clase, texto) {
+  const e = document.createElement(tag);
+  if (clase) e.className = clase;
+  if (texto !== undefined) e.textContent = texto;   // textContent: nunca innerHTML con datos del usuario
+  return e;
+}
+
+function pintar() {
+  const cont = $('#lotes');
+  cont.replaceChildren();
+  const orden = { abierto:0, ultima_llamada:1, adjudicado:2, retirado:3 };
+  lotes.sort((a, b) => orden[a.estado] - orden[b.estado] || String(a.id).localeCompare(String(b.id), 'es', {numeric:true}));
+  for (const l of lotes) {
+    const c = el('div', 'card');
+    c.append(el('strong', '', 'Lote ' + l.id + ' '), el('span', 'estado ' + l.estado, l.estado.replace('_', ' ')));
+    c.append(el('div', 'precio', fmt(l.precio_por_kg) + '/kg'));
+    c.append(el('div', '', l.peso_kg + ' kg · total ' + fmt(l.total)));
+    c.append(el('div', '', 'Líder: ' + (l.ganador || 'sin pujas')));
+    const cuenta = el('div', '', ''); cuenta.dataset.vence = l.vence_ms; c.append(cuenta);
+    if (l.estado === 'abierto' || l.estado === 'ultima_llamada') {
+      const f = el('form'), p = el('input'), m = el('input'), b = el('button', '', 'Pujar'), msg = el('span', 'msg');
+      p.placeholder = 'Tu nombre'; p.required = true; p.value = localStorage.getItem('postor') || '';
+      m.type = 'number'; m.placeholder = 'Mínimo ' + l.minimo_por_kg; m.min = l.minimo_por_kg; m.required = true;
+      f.append(p, m, b, msg);
+      f.onsubmit = async (ev) => {
+        ev.preventDefault(); localStorage.setItem('postor', p.value);
+        const r = await post('/api/lotes/' + encodeURIComponent(l.id) + '/pujas', { postor: p.value, monto: Number(m.value), canal: 'remoto' });
+        msg.textContent = r.ok ? '' : (r.datos.error === 'puja_baja' ? 'Mínimo actual: $' + r.datos.minimo_por_kg : r.datos.error || 'error');
+        refrescarPronto();
+      };
+      c.append(f);
+    }
+    cont.append(c);
+  }
+}
+
+function tick() {
+  for (const e of document.querySelectorAll('[data-vence]')) {
+    const v = Number(e.dataset.vence);
+    e.textContent = v ? 'Cierra en ' + Math.max(0, Math.ceil((v - Date.now()) / 1000)) + ' s' : '';
+  }
+}
+setInterval(tick, 500);
+setInterval(cargar, 5000);   // respaldo por si se pierde el WebSocket
+
+$('#nuevo').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const d = Object.fromEntries(new FormData(ev.target));
+  const cuerpo = { id: /^\d+$/.test(d.id) ? Number(d.id) : d.id, peso_kg: Number(d.peso_kg), base_por_kg: Number(d.base_por_kg) };
+  if (d.abierto_ms) cuerpo.abierto_ms = Number(d.abierto_ms);
+  const r = await post('/api/lotes', cuerpo);
+  $('#msg-nuevo').textContent = r.ok ? '' : (r.datos.error || 'error');
+  if (r.ok) ev.target.reset();
+  cargar();
+};
+
+function agregarEvento(e) {
+  const li = el('li', e.tipo === 'puja_rechazada' ? 'rechazada' : (e.tipo === 'adjudicado' ? 'cierre' : ''));
+  const hora = new Date(e.ts).toLocaleTimeString('es-MX');
+  const quien = e.postor ? ' · ' + e.postor : '';
+  li.textContent = hora + ' · lote ' + e.lote + ' · ' + e.tipo.replace('_', ' ') + quien + ' · $' + e.monto + (e.canal === 'sistema' ? '' : ' (' + e.canal + ')');
+  const feed = $('#feed'); feed.prepend(li);
+  while (feed.children.length > 100) feed.lastChild.remove();
+}
+
+function conectar() {
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/subasta');
+  ws.onopen = () => { $('#conexion').textContent = 'en vivo'; };
+  ws.onmessage = (m) => { const e = JSON.parse(m.data); if (e.tipo !== 'hola') { agregarEvento(e); refrescarPronto(); } };
+  const ping = setInterval(() => ws.readyState === 1 && ws.send('ping'), 25000);
+  ws.onclose = () => { clearInterval(ping); $('#conexion').textContent = 'reconectando…'; setTimeout(conectar, 2000); };
+}
+
+api('/api/eventos?ultimos=30').then(({ datos }) => (datos.eventos || []).forEach(agregarEvento));
+cargar(); conectar();
+</script>
+</body>
+</html>
