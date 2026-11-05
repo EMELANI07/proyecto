@@ -113,4 +113,4 @@ La bitácora (p65_bitacora) guarda todos los eventos de forma ordenada usando un
 
 ## 8. Evidencias
 - Grabación Asciinema: [https://asciinema.org/a/1271202](https://asciinema.org/a/1271202) 
-- GitHub: 
+- GitHub: [https://github.com/EMELANI07/proyecto/tree/main](https://github.com/EMELANI07/proyecto/tree/main)
