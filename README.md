@@ -28,7 +28,7 @@ El módulo principal (`p65_bitacora`) registra de forma ordenada todos los event
 
 ```bash
 # Clonar el repositorio
-git clone <URL_DEL_REPOSITORIO>
+git clone https://github.com/EMELANI07/proyecto/tree/main/65-subasta-de-ganado-o-producto
 cd 65-subasta
 
 # Compilar el módulo de bitácora
