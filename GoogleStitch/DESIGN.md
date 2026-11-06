@@ -1,6 +1,3 @@
-# Muestra de interfaz 
-Muestra que me dio GoogleStitch como muestra de la interfaz que podria usar para el proyecto.
-[DESIGN.md](https://github.com/user-attachments/files/34455032/DESIGN.md)
 ---
 name: AgroAuction Enterprise
 colors:
