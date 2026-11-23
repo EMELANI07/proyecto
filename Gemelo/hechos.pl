@@ -1,4 +1,4 @@
-% solo datos. El “ahora” es un hecho en milisegundos (no el reloj del sistema).
+% Solo datos. El "ahora" es un hecho en milisegundos (no el reloj del sistema).
 :- module(hechos, [
     ahora/1,
     lote/3,
@@ -15,6 +15,8 @@
     precio_vigente/2,
     cargar_escenario_base/0
 ]).
+
+:- encoding(utf8).
 
 :- dynamic ahora/1.
 :- dynamic lote/3.
@@ -80,7 +82,8 @@ cargar_escenario_base :-
     assertz(latencia(r3, 1800)),
 
     % --- Situación 3: Lote 2 (reserva y báscula) ---
-    assertz(precio_vigente(l2, 60)),
+    % Escalon vigente de l2 al llegar p201 (47000 ms): 62 $/kg (supuesto del ejemplo).
+    assertz(precio_vigente(l2, 62)),
     assertz(reserva(l2, 24000, 0)),
     assertz(reserva(l2, 21000, 45000)), % Baja la reserva en pleno remate
     assertz(lectura(l2, peso_lote_kg, 350, 46000)),
