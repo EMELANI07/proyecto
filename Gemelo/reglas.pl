@@ -1,15 +1,18 @@
-% aquí vivirán todas las decisiones del dominio
+% Aqui viviran todas las decisiones del dominio.
 :- module(reglas, [
     decide/3,
     decide_publica/3,
     situacion/3,
     huecos_bitacora/1,
+    huecos_bitacora_lote/2,
     precio_kilo_minimo_reserva/3,
     que_falta_para_cambiar/3,
     condicion_cumple/3,
     lotes_no_pueden_salir/1,
     hipotesis_retraso/4
 ]).
+
+:- encoding(utf8).
 
 :- use_module(hechos).
 :- use_module(library(lists)).
@@ -50,6 +53,7 @@ condicion_cumple(puja_antes_de_adjudicar(PujaId), Estado, Evidencia) :-
 
 condicion_cumple(puja_antes_desconexion(PujaId), Estado, Evidencia) :-
     puja(PujaId, _, Lote, _, Emision, Llegada),
+    huecos_bitacora_lote(Lote, HuecosLote),
     (   evento(_, Lote, conexion_perdida, MsCorte)
     ->  (   Llegada < MsCorte
         ->  Estado = si,
@@ -61,10 +65,10 @@ condicion_cumple(puja_antes_desconexion(PujaId), Estado, Evidencia) :-
             Evidencia = [llegada_en_limite_conexion(PujaId, Llegada, MsCorte)]
         )
     ;   (   Emision == desconocida
-        ;   (huecos_bitacora(H), H \= [])
+        ;   HuecosLote \== []
         )
     ->  Estado = no_se_sabe,
-        Evidencia = [confirmacion_o_bitacora_incompleta(PujaId, emision(Emision))]
+        Evidencia = [confirmacion_o_bitacora_incompleta(PujaId, emision(Emision), huecos_lote(HuecosLote))]
     ;   Estado = si,
         Evidencia = [sin_desconexion_registrada(PujaId, Llegada)]
     ).
@@ -95,8 +99,7 @@ condicion_cumple(reserva_cubierta(Lote, PrecioPorKilo, Instante), Estado, Eviden
     (   EstadoPeso \= si
     ->  Estado = no_se_sabe,
         Evidencia = [reserva_pendiente_de_peso(Lote) | EvPeso]
-    ;   lectura(Lote, peso_lote_kg, Peso, _),
-        number(Peso), Peso > 0,
+    ;   EvPeso = [peso_confirmado(_, Peso, _)],
         reserva_vigente(Lote, Instante, MontoReserva, Desde),
         Total is Peso * PrecioPorKilo,
         (   Total >= MontoReserva
@@ -122,20 +125,35 @@ evaluar_animales([Arete | Resto], [animal_doc(Arete, EstadoA, EvsA) | R2]) :-
     evaluar_docs_animal(Arete, [arete, sanitario, transito], Docs, EstadoA, EvsA),
     evaluar_animales(Resto, R2).
 
-evaluar_docs_animal(_, [], _, si, []).
-evaluar_docs_animal(Arete, [Tipo | Resto], Docs, Estado, Evs) :-
-    (   member(doc(Tipo, Emisor, Vig), Docs)
+evaluar_docs_animal(Arete, Tipos, Docs, Estado, Evs) :-
+    findall(E-Ev,
+            (   member(Tipo, Tipos),
+                evaluar_doc(Arete, Tipo, Docs, E, Ev)
+            ),
+            Pares),
+    pairs_keys_values(Pares, Estados, ListasEv),
+    append(ListasEv, Evs),
+    peor_estado(Estados, Estado).
+
+evaluar_doc(Arete, Tipo, Docs, Estado, Evs) :-
+    (   memberchk(doc(Tipo, Emisor, Vig), Docs)
     ->  (   Vig == desconocida
         ->  Estado = no_se_sabe,
-            Evs = [vigencia_desconocida(animal(Arete), doc(Tipo), emisor(Emisor)) | EvResto],
-            evaluar_docs_animal(Arete, Resto, Docs, _, EvResto)
-        ;   evaluar_docs_animal(Arete, Resto, Docs, EstadoResto, EvResto),
-            Estado = EstadoResto,
-            Evs = EvResto
+            Evs = [vigencia_desconocida(animal(Arete), doc(Tipo), emisor(Emisor))]
+        ;   Estado = si,
+            Evs = []
         )
     ;   Estado = no,
-        Evs = [falta_documento(animal(Arete), doc(Tipo)) | EvResto],
-        evaluar_docs_animal(Arete, Resto, Docs, _, EvResto)
+        Evs = [falta_documento(animal(Arete), doc(Tipo))]
+    ).
+
+% Un faltante cierto (no) domina a una vigencia desconocida (no_se_sabe).
+peor_estado(Estados, Estado) :-
+    (   memberchk(no, Estados)
+    ->  Estado = no
+    ;   memberchk(no_se_sabe, Estados)
+    ->  Estado = no_se_sabe
+    ;   Estado = si
     ).
 
 combinar_documentos(Detalles, Estado, Evidencia) :-
@@ -171,22 +189,48 @@ max_desde([d(D1, M1), d(D2, M2) | Resto], Max) :-
 % 2. Bitácora y huecos
 % -------------------------------------------------------------------------
 
+% huecos_bitacora(-Huecos): numeros de secuencia faltantes en toda la bitacora.
 huecos_bitacora(Huecos) :-
-    findall(Seq, evento(Seq, _, _, _), Raw),
-    sort(Raw, Seqs),
-    buscar_huecos(Seqs, Huecos).
+    huecos_con_vecinos(Gaps),
+    findall(Falt, member(hueco(Falt, _, _), Gaps), Listas),
+    append(Listas, Huecos).
+
+% huecos_bitacora_lote(+Lote, -Huecos): solo los huecos que tocan al lote.
+% Supuesto declarado (SUPUESTOS.md): un hueco afecta a un lote si el evento
+% inmediatamente anterior o el inmediatamente posterior al hueco es de ese lote.
+% Un hueco entre eventos de otros lotes no invalida las pujas de este lote.
+huecos_bitacora_lote(Lote, Huecos) :-
+    huecos_con_vecinos(Gaps),
+    findall(Falt,
+            (   member(hueco(Falt, LoteAntes, LoteDespues), Gaps),
+                (   LoteAntes == Lote
+                ->  true
+                ;   LoteDespues == Lote
+                )
+            ),
+            Listas),
+    append(Listas, Huecos).
+
+% huecos_con_vecinos(-Gaps): Gaps = [hueco(Faltantes, LoteAntes, LoteDespues)]
+huecos_con_vecinos(Gaps) :-
+    findall(Seq-Lote, evento(Seq, Lote, _, _), Raw),
+    sort(1, @<, Raw, Ordenados),
+    buscar_huecos(Ordenados, Gaps).
 
 buscar_huecos([], []).
-buscar_huecos([_], []).
-buscar_huecos([A, B | Resto], Huecos) :-
+buscar_huecos([Primero | Resto], Gaps) :-
+    buscar_huecos_(Resto, Primero, Gaps).
+
+buscar_huecos_([], _, []).
+buscar_huecos_([B-LB | Resto], A-LA, Gaps) :-
     Sig is A + 1,
     (   B > Sig
     ->  Fin is B - 1,
         numlist(Sig, Fin, Falt),
-        append(Falt, HResto, Huecos),
-        buscar_huecos([B | Resto], HResto)
-    ;   buscar_huecos([B | Resto], Huecos)
-    ).
+        Gaps = [hueco(Falt, LA, LB) | GResto]
+    ;   Gaps = GResto
+    ),
+    buscar_huecos_(Resto, B-LB, GResto).
 
 % -------------------------------------------------------------------------
 % 3. situacion(?Entidad, ?Situacion, -Evidencia)
@@ -228,12 +272,11 @@ decide(Lote, Decision, Explicacion) :-
     (   \+ lote(Lote, _, _)
     ->  Decision = invalido(lote_inexistente(Lote)),
         Explicacion = [error(lote_no_registrado(Lote))]
-    ;   huecos_bitacora(Huecos),
-        member(_, Huecos),
+    ;   huecos_bitacora_lote(Lote, Huecos),
+        Huecos \== [],
         evento(_, Lote, reinicio, MsReinicio)
     ->  % Historias compatibles ante hueco + reinicio (Situación 4)
-        (   Historia = retirada_antes_de_cierre_y_reinicio,
-            Decision = secuencia_etapas([abierto, llamada_a_las_dos, retirado], sin_ganador),
+        (   Decision = secuencia_etapas([abierto, llamada_a_las_dos, retirado], sin_ganador),
             Explicacion = [
                 historia_compatible(retirada_antes_de_cierre_y_reinicio),
                 reinicio_registrado(MsReinicio),
@@ -242,8 +285,7 @@ decide(Lote, Decision, Explicacion) :-
                 afecta(postor_lider_sin_compromiso_final),
                 registro_que_decide(evento_retiro_o_llamada_a_las_tres_con_seq_faltante)
             ]
-        ;   Historia = llamada_a_las_tres_antes_de_retiro,
-            Decision = secuencia_etapas([abierto, llamada_a_las_dos, llamada_a_las_tres, adjudicado_o_disputado], revision_requerida),
+        ;   Decision = secuencia_etapas([abierto, llamada_a_las_dos, llamada_a_las_tres, adjudicado_o_disputado], revision_requerida),
             Explicacion = [
                 historia_compatible(llamada_a_las_tres_antes_de_retiro),
                 reinicio_registrado(MsReinicio),
@@ -266,10 +308,7 @@ decide_sin_hueco_critico(Lote, Decision, Explicacion) :-
             Validas),
     findall(Id,
             (   puja(Id, _, Lote, _, _, _),
-                (   condicion_cumple(puja_antes_de_adjudicar(Id), no, _)
-                ;   condicion_cumple(puja_en_escalon_vigente(Id), no, _)
-                ;   condicion_cumple(puja_antes_desconexion(Id), no, _)
-                )
+                once(puja_rechazada(Id))
             ),
             Rechazadas),
     (   Validas == []
@@ -310,6 +349,13 @@ decide_sin_hueco_critico(Lote, Decision, Explicacion) :-
         )
     ).
 
+% Una puja rechazada puede incumplir varias condiciones; se cuenta una sola vez.
+puja_rechazada(Id) :-
+    (   condicion_cumple(puja_antes_de_adjudicar(Id), no, _)
+    ;   condicion_cumple(puja_en_escalon_vigente(Id), no, _)
+    ;   condicion_cumple(puja_antes_desconexion(Id), no, _)
+    ).
+
 ordenar_pujas(Pujas, Ordenadas) :-
     predsort(cmp_puja, Pujas, Ordenadas).
 
@@ -343,8 +389,7 @@ filtrar_publica([Item | Resto], [Item | Filtrada]) :-
 % -------------------------------------------------------------------------
 
 precio_kilo_minimo_reserva(Lote, Instante, PrecioMinimo) :-
-    lectura(Lote, peso_lote_kg, Peso, _),
-    number(Peso), Peso > 0,
+    condicion_cumple(peso_valido(Lote), si, [peso_confirmado(_, Peso, _)]),
     reserva_vigente(Lote, Instante, MontoReserva, _),
     PrecioMinimo is MontoReserva / Peso.
 
