@@ -1,14 +1,24 @@
+% Servidor HTTP del gemelo. No contiene reglas: solo expone lo que decide reglas.pl.
 :- module(servidor, [iniciar/0, iniciar/1]).
+
+:- encoding(utf8).
 
 :- use_module(library(http/thread_httpd)).
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/http_files)).
 :- use_module(library(http/http_parameters)).
+:- use_module(library(lists)).
 :- use_module(hechos).
 :- use_module(reglas).
 
-:- http_handler(root(.), http_reply_from_files('web', [index('index.html')]), [prefix]).
+% web/ se resuelve respecto a este archivo, no al directorio desde donde se lanza swipl.
+:- dynamic web_dir/1.
+:- prolog_load_context(directory, Dir),
+   directory_file_path(Dir, web, WebDir),
+   asserta(web_dir(WebDir)).
+
+:- http_handler(root(.), servir_web, [prefix]).
 :- http_handler(root('api/estado'), manejar_estado, []).
 :- http_handler(root('api/decision'), manejar_decision, []).
 
@@ -19,21 +29,51 @@ iniciar(Puerto) :-
     http_server(http_dispatch, [port(Puerto)]),
     format('Gemelo de subasta escuchando en http://localhost:~w~n', [Puerto]).
 
+servir_web(Request) :-
+    web_dir(Dir),
+    http_reply_from_files(Dir, [index('index.html')], Request).
+
+% -------------------------------------------------------------------------
+% Serializacion: JSON no representa terminos compuestos de Prolog.
+% Atomos, numeros y cadenas pasan igual; un termino compuesto viaja como texto.
+% -------------------------------------------------------------------------
+
+a_json(Term, Json) :-
+    (   is_list(Term)
+    ->  maplist(a_json, Term, Json)
+    ;   atomic(Term)
+    ->  Json = Term
+    ;   term_string(Term, Json)
+    ).
+
+% Un lote puede tener varias historias compatibles (Situacion 4); se devuelven todas.
+historias(Lote, Vista, Historias) :-
+    findall(H,
+            (   decide(Lote, Dec, ExpCompleta),
+                (   Vista == auditor
+                ->  Exp = ExpCompleta
+                ;   once(decide_publica(Lote, Dec, Exp))
+                ),
+                once(que_falta_para_cambiar(Lote, Dec, Falta)),
+                a_json(Dec, DecJ),
+                a_json(Exp, ExpJ),
+                a_json(Falta, FaltaJ),
+                H = _{decision: DecJ, explicacion: ExpJ, que_falta: FaltaJ}
+            ),
+            Historias).
+
 manejar_estado(_Request) :-
     ahora(Ahora),
     findall(_{
         id: Lote,
         vendedor: Vendedor,
         orden: Orden,
-        decision: Dec,
-        explicacion_publica: ExpPub,
-        explicacion_completa: ExpComp,
-        que_falta: Falta
+        historias_publicas: HistPub,
+        historias_auditor: HistAud
     }, (
         lote(Lote, Vendedor, Orden),
-        decide(Lote, Dec, ExpComp),
-        decide_publica(Lote, Dec, ExpPub),
-        que_falta_para_cambiar(Lote, Dec, Falta)
+        historias(Lote, publica, HistPub),
+        historias(Lote, auditor, HistAud)
     ), LotesJson),
     huecos_bitacora(Huecos),
     findall(_{seq: S, lote: L, suceso: Su, ms: M}, evento(S, L, Su, M), EventosJson),
@@ -49,17 +89,18 @@ manejar_decision(Request) :-
         lote(LoteAtom, [atom]),
         vista(VistaAtom, [atom, default(publica)])
     ]),
-    (   VistaAtom == auditor
-    ->  decide(LoteAtom, Dec, Exp)
-    ;   decide_publica(LoteAtom, Dec, Exp)
+    historias(LoteAtom, VistaAtom, Historias),
+    (   Historias = [Primera | _]
+    ->  true
+    ;   Primera = _{decision: null, explicacion: [], que_falta: []}
     ),
-    que_falta_para_cambiar(LoteAtom, Dec, Falta),
     reply_json_dict(_{
         lote: LoteAtom,
         vista: VistaAtom,
-        decision: Dec,
-        explicacion: Exp,
-        que_falta: Falta
+        decision: Primera.decision,
+        explicacion: Primera.explicacion,
+        que_falta: Primera.que_falta,
+        historias: Historias
     }).
 
 :- initialization(iniciar(8080), program).
