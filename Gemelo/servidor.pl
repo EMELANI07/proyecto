@@ -9,6 +9,7 @@
 :- use_module(library(http/http_files)).
 :- use_module(library(http/http_parameters)).
 :- use_module(library(lists)).
+:- use_module(library(main)).
 :- use_module(hechos).
 :- use_module(reglas).
 
@@ -103,4 +104,16 @@ manejar_decision(Request) :-
         historias: Historias
     }).
 
-:- initialization(iniciar(8080), program).
+% Arranque: swipl servidor.pl [Puerto]
+% Se queda escuchando sin necesitar terminal interactiva, asi que tambien
+% funciona en segundo plano: nohup swipl servidor.pl > servidor.log 2>&1 &
+:- initialization(main, main).
+
+main(Argv) :-
+    (   Argv = [PuertoTxt | _],
+        atom_number(PuertoTxt, Puerto)
+    ->  true
+    ;   Puerto = 8080
+    ),
+    iniciar(Puerto),
+    thread_get_message(_).
